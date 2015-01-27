@@ -1,8 +1,9 @@
-$:.push('./lib')
-ENABLE_KERBEROS = false
-ENABLE_FORWARD = false
-$:.push(ENV['GSSAPI_DIR'] || '../gssapi/lib/') if ENABLE_KERBEROS
-$:.push(ENV['NET_SSH_KERBEROS_DIR'] || '../net-ssh-kerberos/lib/') if ENABLE_KERBEROS
+ENABLE_KERBEROS = ENV['NO_KRB'] ? false : true
+ENABLE_FORWARD = true
+puts "kerberos:#{ENABLE_KERBEROS}"
+$:.push(ENV['NET_SSH_DIR'] || './net-ssh/lib')
+$:.push(ENV['GSSAPI_DIR'] || './gssapi/lib/') if ENABLE_KERBEROS
+$:.push(ENV['NET_SSH_KERBEROS_DIR'] || './net-ssh-kerberos/lib/') if ENABLE_KERBEROS
 require 'net/ssh'
 require 'net/ssh/server'
 require 'net/ssh/server/keys'
@@ -22,7 +23,7 @@ Thread.abort_on_exception=true
 
 logger = Logger.new(STDERR)
 logger.level = Logger::DEBUG
-#logger.level = Logger::WARN
+logger.level = Logger::WARN unless (ENV['DEBUG'] && ENV['DEBUG'].include?('S'))
 
 puts "Setting up server keys..."
 server_keys = Net::SSH::Server::Keys.new(logger: logger, server_keys_directory: '.')
@@ -74,7 +75,7 @@ class FwdConnection
     @options = options
     alogger = Logger.new(STDERR)
     alogger.level = Logger::DEBUG
-    #alogger.level = Logger::WARN
+    alogger.level = Logger::WARN unless (ENV['DEBUG'] && ENV['DEBUG'].include?('F'))
     alogger.formatter = proc { |severity, datetime, progname, msg| "[FWD] #{datetime}: #{msg}\n" }
     options[:logger] = alogger
     self.logger = alogger
@@ -140,11 +141,16 @@ class FwdConnection
       channel.on_request request_type do |channel,data,options|
         _fwd_channel(channel).on_data do |fwd_channel,data|
           #puts "#{request_type}: data from server => client"
+          debug { "data from fwd   -> : #{data}"}
           channel.send_data(data)
+          channel._flush
         end
         channel.on_data do |channel,data|
+          debug { "data from client -> : #{data}"}
           #puts "#{request_type}: data from client => server"
-          _fwd_channel(channel).send_data(data)
+          fwd_channel = _fwd_channel(channel)
+          fwd_channel.send_data(data)
+          fwd_channel._flush
         end
         if options[:want_reply]
           _fwd_channel(channel).send_channel_request(request_type,:raw,data.read) do |fwd_ch, success|
