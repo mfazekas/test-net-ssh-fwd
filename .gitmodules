@@ -1,0 +1,12 @@
+[submodule "net-ssh"]
+	path = net-ssh
+	url = https://github.com/mfazekas/net-ssh
+	branch = server_side
+[submodule "net-ssh-kerberos"]
+	path = net-ssh-kerberos
+	url = https://github.com/mfazekas/net-ssh-kerberos
+	branch = server_side
+[submodule "gssapi"]
+	path = gssapi
+	url = https://github.com/mfazekas/gssapi
+	branch = verify-mic-delegate
