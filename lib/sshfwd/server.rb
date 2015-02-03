@@ -78,9 +78,11 @@ class FwdConnection
   def initialize(host,options)
     @host = host
     @options = options
+    @event_loop = options[:event_loop]
     alogger = SSHFwd::_create_logger(options)
     alogger.formatter = proc { |severity, datetime, progname, msg| "[FWD] #{datetime}: #{msg}\n" }
     options[:logger] = alogger
+    options[:ssh][:logger] = alogger
     self.logger = alogger
   end
 
@@ -95,22 +97,24 @@ class FwdConnection
 
   def allow_password?(username,password,options)
     @auth = Net::SSH::Authentication::Session.new(@transport, @options[:ssh])
-    if @auth.authenticate(options[:next_service], username, password) 
+    if @auth.authenticate(options[:next_service], username, password)
       _init_connection
+      @username = username
     end
   end
 
   def allow_kerberos?(username,srv,options)
     if delegated_credentials = srv.delegated_credentials
-      @auth = Net::SSH::Authentication::Session.new(@transport, 
-        @options[:ssh].merge(auth_methods: ["gssapi-with-mic"],
-                             gss_delegated_credentials: delegated_credentials))
-      debug { "_auth started to upstream "}
+      @auth = Net::SSH::Authentication::Session.new(
+        @transport, 
+        @options[:ssh].merge(
+          auth_methods: ["gssapi-with-mic"],
+          gss_delegated_credentials: delegated_credentials))
+      debug { "_auth started to upstream " }
       if @auth.authenticate(options[:next_service], username)
-        debug { "_auth finished to upstream "}
-        debug { "_init_connection before" }
+        debug { "_auth finished to upstream" }
         _init_connection
-        debug { "_init_connection after" }
+        @username = username
         true
       else
         false
@@ -129,18 +133,25 @@ class FwdConnection
     ['shell','exec','pty-req','env']
   end
 
+  # wait for the channel to become available
+  # we should not process our channels
+  # as we're not that reetrant
   def _fwd_channel(channel)
     result = channel.fwd_channel
     while result.nil? do
       timeout = 0.001
       debug { "waiting for fwd hannel "}
-      @fwd_conn.process(timeout)
+      if @event_loop
+        @event_loop.process_only(@fwd_conn,timeout)
+      else
+        @fwd_conn.process(timeout)
+      end
       result = channel.fwd_channel
     end
     return result
   end
 
-  def _handle_ptr_req(channel,data)
+  def _handle_pty_req(channel,data)
     term = data.read_string
     debug { "pty-req terminal: #{term}" }
   end
@@ -148,7 +159,7 @@ class FwdConnection
   def _handle_channel_request(channel,request_type,data)
     case request_type
     when 'pty-req'
-      _handle_ptr_req(channel,data.remainder_as_buffer)
+      _handle_pty_req(channel,data.remainder_as_buffer)
     end
   end
 
@@ -163,18 +174,26 @@ class FwdConnection
     end.join("")
   end
 
+  def _setup_filters channel, filters
+    return if filters.nil?
+    channel.client_filter = filters[:client] if filters[:client]
+  end
+
   def _handle_channel(channel)
     _supported_requests.each do |request_type|
       channel.on_request request_type do |channel,data,options|
-        channel.client_filter = @options[:create_client_filter][request_type]
         _handle_channel_request(channel,request_type,data)
+        _setup_filters channel, @options[:create_filter][request_type, username:@username]
+
         _fwd_channel(channel).on_data do |fwd_channel,data|
-          debug { "data from fwd   -> : #{_print_data(data)}"}
+          debug { "data from server -> client : #{_print_data(data)}"}
           channel.send_data(data)
           channel._flush
         end
+
         channel.on_data do |channel,data|
-          debug { "data from client -> : #{_print_data(data)}" }
+          debug { "data from client -> server : #{_print_data(data)}" }
+
           if filter = channel.client_filter
             ret = filter.filter(data)
             if ret
@@ -187,18 +206,22 @@ class FwdConnection
               end
             end
           end
+
           fwd_channel = _fwd_channel(channel)
           fwd_channel.send_data(data)
           fwd_channel._flush
         end
+
         if options[:want_reply]
           _fwd_channel(channel).send_channel_request(request_type,:raw,data.read) do |fwd_ch, success|
+            info { "received reply from server: #{request_type} #{success} forwarding to client" }
             channel.send_reply(success)
             options[:want_reply] = false
           end
         else
           _fwd_channel(channel).send_channel_request(request_type,:raw,data.read)
         end
+
       end
     end
   end
@@ -215,9 +238,35 @@ class FwdConnection
       debug { "received open_channel from client" }
       @fwd_conn.open_channel('session') do |fwd_channel|
         debug { "opened channel on fwd! setting:#{fwd_channel}" }
-        channel.fwd_channel=fwd_channel
+        channel.fwd_channel = fwd_channel
+        register_server_request_handlers(fwd_channel,channel)
       end
-      debug { "reply open_channel to client" }
+      debug { "reply open_channel session to client" }
+    end
+  end
+
+  def forward_request_client_server
+    ["exit-status"]
+  end
+
+  def register_server_request_handlers(fwd_channel,channel)
+    forward_request_client_server.each do |request_type|
+      fwd_channel.on_request request_type do |channel,data,options|
+        info { "received request from server #{request_type} so forwarding to client" }
+        if options[:want_reply]
+          channel.send_channel_request(request_type,:raw,data.read) do |fwd_ch, success|
+            info { "received reply from client on #{request_type} #{success} forwarding to server" }
+            channel.send_reply(success)
+            options[:want_reply] = false
+          end
+        else
+          channel.send_channel_request(request_type,:raw,data.read)
+        end
+      end
+    end
+    fwd_channel.on_eof do |fwd_channel|
+      info { "received eof from server => closing channel to client" }
+      channel.send_eof_and_close
     end
   end
 end
@@ -237,11 +286,17 @@ class Server
     logger.info { "Listening on port #{port}..." }
     server = TCPServer.new port
     auth_logic = AuthLogic.new
+
+    evlogger = SSHFwd::_create_logger(@server_options)
+    evlogger.formatter = proc { |severity, datetime, progname, msg| "[EV] #{datetime}: #{msg}\n" }
     loop do
       Thread.start(server.accept) do |client|
         begin
+          event_loop = Net::SSH::Connection::Session::EventLoop.new(evlogger)
           client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
           options = {}
+          use_listeners = false
+          options[:listeners] ={} if use_listeners
           options[:logger] = logger
           options[:server_side] = true
           options[:server_keys] = server_keys.keys
@@ -249,7 +304,7 @@ class Server
           options[:kex] = ['diffie-hellman-group-exchange-sha256']
           options[:hmac] = ['hmac-md5']
           options[:auth_logic] = auth_logic
-          options[:listeners] = {}
+          options[:event_loop] = event_loop unless use_listeners
           if (kerbotps = @server_options[:kerberos])
             options[:allowed_auth_methods] = ['gssapi-with-mic']
             options[:gss_server_host] = kerbotps[:host]
@@ -259,7 +314,10 @@ class Server
 
           fwd_options = @forward_options
           fwd_options[:ssh]||={}
-          fwd_options[:ssh][:listeners] = options[:listeners]
+          fwd_options[:ssh][:listeners] = options[:listeners] if use_listeners
+          fwd_options[:ssh][:event_loop] = event_loop unless use_listeners
+          fwd_options[:event_loop] = event_loop unless use_listeners
+          fwd_options[:ssh][:verbose] = @forward_options[:verbose] if @forward_options[:verbose]
           fwd_host = @forward_options[:host]
 
           fwd_connection = FwdConnection.new(fwd_host,fwd_options)
@@ -276,11 +334,15 @@ class Server
               fwd_connection.handle(connection)
               handler_added = true
             end
-            fwd_connection.process
+            #if use_listeners
+              fwd_connection.process
+              #else
+            #  event_loop.process
+            #end
           end
         rescue Exception => exception
           logger.error { "Got exception: #{exception.inspect}" }
-          logger.error { exception.backtrace }
+          logger.error { exception.backtrace.join("\n") }
           client.close
         end
       end

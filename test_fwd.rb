@@ -21,28 +21,32 @@ class ClientInputFilter
   end
 end
 
+LISTEN_PORT = 2000
+DEST_PORT = 22
+
 server_options = {
   kerberos: {
     host: 'precise32.fazmic.com',
     service: 'host',
     keytab: '/etc/krb5.keytab'
   },
-  verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('S')) ? :debug : :info,
-  port: 2000
+  verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('S')) ? :debug : :warn,
+  port: LISTEN_PORT
 }
 forward_options = {
   disabled: (ENV['NO_FORWARD']),
   host: 'localhost',
-  verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('F')) ? :debug : :info,
+  verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('F')) ? :debug : :warn,
   ssh: {
-    port: 22
+    port: DEST_PORT
   },
-  create_client_filter: ->(request_type) {
-    case request_type 
+  create_filter: ->(request_type, options = {}) {
+    puts " => user #{options[:username]} request_type:#{request_type}"
+    case request_type
       when 'pty-req'
-        ClientInputFilter.new
+        {client:ClientInputFilter.new}
       when 'shell'
-        ClientInputFilter.new
+        {client:ClientInputFilter.new}
       else
         nil
     end
