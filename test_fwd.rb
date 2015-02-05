@@ -44,10 +44,17 @@ forward_options = {
     puts " => user #{options[:username]} request_type:#{request_type}"
     case request_type
       when 'pty-req'
+        terminal = options[:packet].read_string
+        puts "terminal: #{terminal}"
         {client:ClientInputFilter.new}
       when 'shell'
         {client:ClientInputFilter.new}
+      when 'exec'
+        command = options[:packet].read_string
+        puts "exec: #{command}"
+        nil
       else
+        puts "unknown: #{request_type}"
         nil
     end
   }

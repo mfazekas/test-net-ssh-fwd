@@ -130,7 +130,7 @@ class FwdConnection
   end
 
   def _supported_requests
-    ['shell','exec','pty-req','env']
+    ['shell','exec','pty-req','env','subsystem']
   end
 
   # wait for the channel to become available
@@ -151,18 +151,6 @@ class FwdConnection
     return result
   end
 
-  def _handle_pty_req(channel,data)
-    term = data.read_string
-    debug { "pty-req terminal: #{term}" }
-  end
-
-  def _handle_channel_request(channel,request_type,data)
-    case request_type
-    when 'pty-req'
-      _handle_pty_req(channel,data.remainder_as_buffer)
-    end
-  end
-
   def _print_data(data)
     out = data.to_s.each_byte.map do |ch|
       case ch 
@@ -179,11 +167,35 @@ class FwdConnection
     channel.client_filter = filters[:client] if filters[:client]
   end
 
+  def _handle_data_from_client(channel)
+    channel.on_data do |channel,data|
+      debug { "data from client -> server : #{_print_data(data)}" }
+
+      if filter = channel.client_filter
+        ret = filter.filter(data)
+        if ret
+          if ret[:reply]
+            channel.send_data(ret[:reply])
+            channel._flush
+          end
+          if ret[:action] == :terminate
+            raise Exception, "Bad command terminate"
+          end
+        end
+      end
+
+      fwd_channel = _fwd_channel(channel)
+      fwd_channel.send_data(data)
+      fwd_channel._flush
+    end
+  end
+
   def _handle_channel(channel)
     _supported_requests.each do |request_type|
-      channel.on_request request_type do |channel,data,options|
-        _handle_channel_request(channel,request_type,data)
-        _setup_filters channel, @options[:create_filter][request_type, username:@username]
+      channel.on_request request_type do |channel,packet,options|
+        debug { "request from client -> server: #{request_type}"}
+        _setup_filters channel, @options[:create_filter][request_type,
+            username:@username, packet:packet.remainder_as_buffer]
 
         _fwd_channel(channel).on_data do |fwd_channel,data|
           debug { "data from server -> client : #{_print_data(data)}"}
@@ -191,37 +203,24 @@ class FwdConnection
           channel._flush
         end
 
-        channel.on_data do |channel,data|
-          debug { "data from client -> server : #{_print_data(data)}" }
-
-          if filter = channel.client_filter
-            ret = filter.filter(data)
-            if ret
-              if ret[:reply]
-                channel.send_data(ret[:reply])
-                channel._flush
-              end
-              if ret[:action] == :terminate
-                raise Exception, "Bad command terminate"
-              end
-            end
-          end
-
-          fwd_channel = _fwd_channel(channel)
-          fwd_channel.send_data(data)
-          fwd_channel._flush
-        end
+        _handle_data_from_client(channel)
 
         if options[:want_reply]
-          _fwd_channel(channel).send_channel_request(request_type,:raw,data.read) do |fwd_ch, success|
+          _fwd_channel(channel).send_channel_request(request_type,:raw,packet.read) do |fwd_ch, success|
             info { "received reply from server: #{request_type} #{success} forwarding to client" }
             channel.send_reply(success)
             options[:want_reply] = false
           end
         else
-          _fwd_channel(channel).send_channel_request(request_type,:raw,data.read)
+          _fwd_channel(channel).send_channel_request(request_type,:raw,packet.read)
         end
 
+      end
+
+      channel.on_eof do |channel|
+        info { "received eof from client => closing channel to server" }
+        _fwd_channel(channel).eof!
+        _fwd_channel(channel)._flush
       end
     end
   end
@@ -238,6 +237,7 @@ class FwdConnection
       debug { "received open_channel from client" }
       @fwd_conn.open_channel('session') do |fwd_channel|
         debug { "opened channel on fwd! setting:#{fwd_channel}" }
+        fwd_channel.extend(Net::SSH::Server::ChannelExtensions)
         channel.fwd_channel = fwd_channel
         register_server_request_handlers(fwd_channel,channel)
       end
