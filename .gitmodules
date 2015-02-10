@@ -10,3 +10,7 @@
 	path = gssapi
 	url = https://github.com/mfazekas/gssapi
 	branch = verify-mic-delegate
+[submodule "beltone"]
+	path = beltone
+	url = https://github.com/mfazekas/beltone
+	branch = mfazekas-improvement

@@ -73,6 +73,12 @@ class FwdConnection
     def client_filter=(value)
       @_client_filter=value
     end
+    def server_filter
+      @_server_filter
+    end
+    def server_filter=(value)
+      @_server_filter=value
+    end
   end
 
   def initialize(host,options)
@@ -165,6 +171,7 @@ class FwdConnection
   def _setup_filters channel, filters
     return if filters.nil?
     channel.client_filter = filters[:client] if filters[:client]
+    channel.server_filter = filters[:server] if filters[:server]
   end
 
   def _handle_data_from_client(channel)
@@ -179,14 +186,37 @@ class FwdConnection
             channel._flush
           end
           if ret[:action] == :terminate
-            raise Exception, "Bad command terminate"
+            raise Exception, "Bad command => terminate"
           end
         end
       end
 
       fwd_channel = _fwd_channel(channel)
+
       fwd_channel.send_data(data)
       fwd_channel._flush
+    end
+  end
+
+  def _handle_data_from_server(channel)
+    _fwd_channel(channel).on_data do |fwd_channel,data|
+      debug { "data from server -> client : #{_print_data(data)}"}
+
+      if filter = channel.server_filter
+        ret = filter.filter(data)
+        if ret
+          if ret[:reply]
+            channel.send_data(ret[:reply])
+            channel._flush
+          end
+          if ret[:action] == :terminate
+            raise Exception, "Bad command => terminate"
+          end
+        end
+      end
+
+      channel.send_data(data)
+      channel._flush
     end
   end
 
@@ -197,11 +227,7 @@ class FwdConnection
         _setup_filters channel, @options[:create_filter][request_type,
             username:@username, packet:packet.remainder_as_buffer]
 
-        _fwd_channel(channel).on_data do |fwd_channel,data|
-          debug { "data from server -> client : #{_print_data(data)}"}
-          channel.send_data(data)
-          channel._flush
-        end
+        _handle_data_from_server(channel)
 
         _handle_data_from_client(channel)
 

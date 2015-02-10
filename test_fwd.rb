@@ -2,9 +2,12 @@ ENABLE_KERBEROS =  ENV['NO_KRB'] ? false : true
 $:.push(ENV['NET_SSH_DIR'] || './net-ssh/lib')
 $:.push(ENV['GSSAPI_DIR'] || './gssapi/lib/') if ENABLE_KERBEROS
 $:.push(ENV['NET_SSH_KERBEROS_DIR'] || './net-ssh-kerberos/lib/') if ENABLE_KERBEROS
+$:.push(ENV['BELTONE_DIR'] || './beltone/lib')
 $:.push("./lib")
 
 require 'sshfwd/server'
+require 'screen'
+require 'parser'
 
 class ClientInputFilter
   def initialize
@@ -14,6 +17,22 @@ class ClientInputFilter
   def filter(data)
     @buffer.concat(data)
     if @buffer =~ /shutdown/
+      {action: :terminate, reply: "BAD"}
+    else
+      nil
+    end
+  end
+end
+
+class ClientOutputFilter
+  def initialize(terminal,w,h)
+    @screen = Screen.new(width:w,height:h)
+    @parser = Parser.new(@screen)
+  end
+
+  def filter(data)
+    @parser.read_tokens(data)
+    if @screen.line(@screen.cursor_y) =~ /shutdown/
       {action: :terminate, reply: "BAD"}
     else
       nil
@@ -45,8 +64,10 @@ forward_options = {
     case request_type
       when 'pty-req'
         terminal = options[:packet].read_string
+        width = options[:packet].read_long
+        height = options[:packet].read_long
         puts "terminal: #{terminal}"
-        {client:ClientInputFilter.new}
+        {client:ClientInputFilter.new, server:ClientOutputFilter.new(terminal,width,height)}
       when 'shell'
         {client:ClientInputFilter.new}
       when 'exec'
