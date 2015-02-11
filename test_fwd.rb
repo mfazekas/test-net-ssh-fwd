@@ -14,7 +14,7 @@ class ClientInputFilter
     @buffer = ""
   end
 
-  def filter(data)
+  def filterin(data)
     @buffer.concat(data)
     if @buffer =~ /shutdown/
       {action: :terminate, reply: "BAD"}
@@ -30,7 +30,7 @@ class ClientOutputFilter
     @parser = Parser.new(@screen)
   end
 
-  def filter(data)
+  def filterout(data)
     @parser.read_tokens(data)
     if @screen.line(@screen.cursor_y) =~ /shutdown/
       {action: :terminate, reply: "BAD"}

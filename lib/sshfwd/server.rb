@@ -7,11 +7,6 @@ require 'socket'
 require 'ostruct'
 require 'byebug'
 
-if ENABLE_KERBEROS
-  require 'net/ssh/kerberos'
-end
-
-
 module SSHFwd
 
 def self._create_logger(options)
@@ -179,7 +174,7 @@ class FwdConnection
       debug { "data from client -> server : #{_print_data(data)}" }
 
       if filter = channel.client_filter
-        ret = filter.filter(data)
+        ret = filter.filterin(data)
         if ret
           if ret[:reply]
             channel.send_data(ret[:reply])
@@ -203,7 +198,7 @@ class FwdConnection
       debug { "data from server -> client : #{_print_data(data)}"}
 
       if filter = channel.server_filter
-        ret = filter.filter(data)
+        ret = filter.filterout(data)
         if ret
           if ret[:reply]
             channel.send_data(ret[:reply])
@@ -224,8 +219,9 @@ class FwdConnection
     _supported_requests.each do |request_type|
       channel.on_request request_type do |channel,packet,options|
         debug { "request from client -> server: #{request_type}"}
+
         _setup_filters channel, @options[:create_filter][request_type,
-            username:@username, packet:packet.remainder_as_buffer]
+            username:@username, packet:packet.remainder_as_buffer] if @options[:create_filter]
 
         _handle_data_from_server(channel)
 
@@ -244,9 +240,12 @@ class FwdConnection
       end
 
       channel.on_eof do |channel|
-        info { "received eof from client => closing channel to server" }
-        _fwd_channel(channel).eof!
-        _fwd_channel(channel)._flush
+        info { "received eof from client => forwarding to server" }
+        _fwd_channel(channel).send_eof
+      end
+      channel.on_close do |channel|
+        info { "received close from client => forwarding to server" }
+        _fwd_channel(channel).close
       end
     end
   end
@@ -277,7 +276,7 @@ class FwdConnection
 
   def register_server_request_handlers(fwd_channel,channel)
     forward_request_client_server.each do |request_type|
-      fwd_channel.on_request request_type do |channel,data,options|
+      fwd_channel.on_request request_type do |fwd_channel,data,options|
         info { "received request from server #{request_type} so forwarding to client" }
         if options[:want_reply]
           channel.send_channel_request(request_type,:raw,data.read) do |fwd_ch, success|
@@ -287,12 +286,21 @@ class FwdConnection
           end
         else
           channel.send_channel_request(request_type,:raw,data.read)
+          channel._flush
         end
       end
     end
     fwd_channel.on_eof do |fwd_channel|
-      info { "received eof from server => closing channel to client" }
-      channel.send_eof_and_close
+      #info { "received eof from server => closing channel to client" }
+      #channel.send_eof_and_close
+      info { "received eof from server => sending eof to client" }
+      channel.send_eof
+      info { "sent eof" }
+    end
+    fwd_channel.on_close do |fwd_channel|
+      info { "received close from server => closing to client" }
+      channel.close
+      info { "sent close" }
     end
   end
 end
@@ -301,78 +309,105 @@ class Server
   def initialize(server_options,forward_options)
     @server_options = server_options
     @forward_options = forward_options
+    @stopped = false
   end
-  
+
+  def stop
+    @stopped = true
+    @port,@host = @server.addr[1..2]
+    TCPSocket.new(@host,@port)
+    @server.close
+  end
+
+  def handle_client(client,logger,evlogger,auth_logic,server_keys)
+    begin
+      event_loop = Net::SSH::Connection::Session::EventLoop.new(evlogger)
+      client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
+      options = {}
+      use_listeners = false
+      options[:listeners] ={} if use_listeners
+      options[:logger] = logger
+      options[:server_side] = true
+      options[:server_keys] = server_keys.keys
+      options[:host_key] = server_keys.types
+      options[:kex] = ['diffie-hellman-group-exchange-sha256']
+      options[:hmac] = ['hmac-md5']
+      options[:auth_logic] = auth_logic
+      options[:event_loop] = event_loop unless use_listeners
+      if (kerbotps = @server_options[:kerberos])
+        options[:auth_methods] = ['gssapi-with-mic']
+        options[:gss_server_host] = kerbotps[:host]
+        options[:gss_server_service] = kerbotps[:service]
+        options[:gss_server_servicekeytab] = kerbotps[:keytab]
+      end
+
+      fwd_options = @forward_options
+      fwd_options[:ssh]||={}
+      fwd_options[:ssh][:listeners] = options[:listeners] if use_listeners
+      fwd_options[:ssh][:event_loop] = event_loop unless use_listeners
+      fwd_options[:ssh][:use_agent] = false
+      if (kerbotps = @server_options[:kerberos])
+        fwd_options[:ssh][:auth_methods] = ['gssapi-with-mic']
+      else
+        fwd_options[:ssh][:auth_methods] = ['keyboard-interactive','password']
+      end
+      fwd_options[:event_loop] = event_loop unless use_listeners
+      fwd_options[:ssh][:verbose] = @forward_options[:verbose] if @forward_options[:verbose]
+      fwd_host = @forward_options[:host]
+
+      fwd_connection = FwdConnection.new(fwd_host,fwd_options)
+      if @forward_options[:disabled]
+        fwd_connection = DummyFwdConnection.new(fwd_host,fwd_options)
+      end
+      options[:auth_logic] = fwd_connection
+      run_loop_hook = -> { fwd_connection.process }
+      fwd_connection.connect
+      session = Net::SSH::Transport::ServerSession.new(client,options.merge(run_loop_hook:run_loop_hook))
+      handler_added = false
+      session.run_loop do |connection|
+        if !handler_added
+          fwd_connection.handle(connection)
+          handler_added = true
+        end
+        #if use_listeners
+          fwd_connection.process
+          #else
+        #  event_loop.process
+        #end
+      end
+    rescue Exception => exception
+      logger.error { "Got exception: #{exception.inspect}" }
+      logger.error { exception.backtrace.join("\n") }
+      client.close
+    end
+  end
+
   def run
     logger = SSHFwd::_create_logger(@server_options)
+
     logger.info { "Setting up server keys..." }
     server_keys = Net::SSH::Server::Keys.new(logger: logger, server_keys_directory: '.')
     server_keys.load_or_generate
-    port = @server_options[:port]
-    logger.info { "Listening on port #{port}..." }
-    server = TCPServer.new port
+
+    @server = @server_options[:server]
+
+    if @server.nil?
+      port = @server_options[:port]
+      logger.info { "Listening on port #{port}..." }
+      @server = TCPServer.new port
+    end
+
     auth_logic = AuthLogic.new
 
     evlogger = SSHFwd::_create_logger(@server_options)
     evlogger.formatter = proc { |severity, datetime, progname, msg| "[EV] #{datetime}: #{msg}\n" }
+
     loop do
-      Thread.start(server.accept) do |client|
-        begin
-          event_loop = Net::SSH::Connection::Session::EventLoop.new(evlogger)
-          client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-          options = {}
-          use_listeners = false
-          options[:listeners] ={} if use_listeners
-          options[:logger] = logger
-          options[:server_side] = true
-          options[:server_keys] = server_keys.keys
-          options[:host_key] = server_keys.types
-          options[:kex] = ['diffie-hellman-group-exchange-sha256']
-          options[:hmac] = ['hmac-md5']
-          options[:auth_logic] = auth_logic
-          options[:event_loop] = event_loop unless use_listeners
-          if (kerbotps = @server_options[:kerberos])
-            options[:allowed_auth_methods] = ['gssapi-with-mic']
-            options[:gss_server_host] = kerbotps[:host]
-            options[:gss_server_service] = kerbotps[:service]
-            options[:gss_server_servicekeytab] = kerbotps[:keytab]
-          end
-
-          fwd_options = @forward_options
-          fwd_options[:ssh]||={}
-          fwd_options[:ssh][:listeners] = options[:listeners] if use_listeners
-          fwd_options[:ssh][:event_loop] = event_loop unless use_listeners
-          fwd_options[:event_loop] = event_loop unless use_listeners
-          fwd_options[:ssh][:verbose] = @forward_options[:verbose] if @forward_options[:verbose]
-          fwd_host = @forward_options[:host]
-
-          fwd_connection = FwdConnection.new(fwd_host,fwd_options)
-          if @forward_options[:disabled]
-            fwd_connection = DummyFwdConnection.new(fwd_host,fwd_options)
-          end
-          options[:auth_logic] = fwd_connection
-          run_loop_hook = -> { fwd_connection.process }
-          fwd_connection.connect
-          session = Net::SSH::Transport::ServerSession.new(client,options.merge(run_loop_hook:run_loop_hook))
-          handler_added = false
-          session.run_loop do |connection|
-            if !handler_added
-              fwd_connection.handle(connection)
-              handler_added = true
-            end
-            #if use_listeners
-              fwd_connection.process
-              #else
-            #  event_loop.process
-            #end
-          end
-        rescue Exception => exception
-          logger.error { "Got exception: #{exception.inspect}" }
-          logger.error { exception.backtrace.join("\n") }
-          client.close
-        end
+      break if @stopped
+      Thread.start(@server.accept) do |client|
+        handle_client(client,logger,evlogger,auth_logic,server_keys) unless @stopped
       end
-    end    
+    end
   end
 end
 
