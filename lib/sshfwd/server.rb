@@ -5,7 +5,17 @@ require 'net/ssh/transport/server_session'
 require 'net/ssh/server/channel_extensions'
 require 'socket'
 require 'ostruct'
-require 'byebug'
+
+module Net ; module SSH ; module Server
+  module ChannelExtensions
+    EXTENDED_DATA_STDERR = 1
+    def send_extended_data(data, type=EXTENDED_DATA_STDERR)
+      msg = Net::SSH::Buffer.from(:byte, Net::SSH::Connection::Constants::CHANNEL_EXTENDED_DATA, 
+        :long, remote_id, :long, type, :string, data)
+      connection.send_message(msg)
+    end
+  end
+end ; end ; end
 
 module SSHFwd
 
@@ -177,7 +187,12 @@ class FwdConnection
         ret = filter.filterin(data)
         if ret
           if ret[:reply]
-            channel.send_data(ret[:reply])
+            puts ":reply is deprecated use :error_msg"
+            channel.send_extended_data(ret[:reply])
+            channel._flush
+          end
+          if ret[:error_msg]
+            channel.send_extended_data(ret[:error_msg])
             channel._flush
           end
           if ret[:action] == :terminate
@@ -201,7 +216,12 @@ class FwdConnection
         ret = filter.filterout(data)
         if ret
           if ret[:reply]
-            channel.send_data(ret[:reply])
+            puts ":reply is deprecated use :error_msg"
+            channel.send_extended_data(ret[:reply])
+            channel._flush
+          end
+          if ret[:error_msg]
+            channel.send_extended_data(ret[:error_msg])
             channel._flush
           end
           if ret[:action] == :terminate

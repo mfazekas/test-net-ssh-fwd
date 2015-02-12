@@ -21,7 +21,7 @@ class ClientInputFilter
   def filterin(data)
     @buffer.concat(data)
     if @buffer =~ /shutdown/
-      {action: :terminate, reply: "BAD"}
+      {action: :terminate, error_msg: "BAD FILENAME\n"}
     else
       nil
     end
@@ -37,7 +37,7 @@ class ClientOutputFilter
   def filterout(data)
     @parser.read_tokens(data)
     if @screen.line(@screen.cursor_y) =~ /shutdown/
-      {action: :terminate, reply: "BAD"}
+      {action: :terminate, error_msg: "BAD COMMAND\n"}
     else
       nil
     end

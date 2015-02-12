@@ -20,6 +20,7 @@
   tasks:
   - user: name=foo password="{{foopwd}}" group=vagrant state=present
   - user: name=foo2 password="{{foo2pwd}}" group=vagrant state=present
+  - user: name=fazmic group=vagrant state=present
   - gem: name="{{item}}" state=present executable=/usr/local/bin/gem
     with_items:
       - byebug
@@ -42,10 +43,14 @@
     file: name=/etc/krb5kdc/ state=directory mode=0700
   - name: configure kdc
     template: src=./files/etc/krb5kdc/kdc.conf dest=/etc/krb5kdc/kdc.conf
+  - name: configure kdc
     template: src=./files/etc/krb5kdc/kadm5.acl dest=/etc/krb5kdc/kadm5.acl
+  - name: configure kdc
     template: src=./files/etc/krb5.conf dest=/etc/krb5.conf
   - name: configure etc/hosts
     lineinfile: dest=/etc/hosts regexp='^127\.0\.0\.1' line='127.0.0.1 precise32.fazmic.com localhost precise32' owner=root group=root mode=0644
+  - name: configure etc/hostname
+    copy: src=./files/etc/hostname dest=/etc/hostname
   - name: pam auth update
     command: pam-auth-update --force --package
   - name: configure realm (use rm -rf to remove /etc/krb5kdc/)
@@ -59,18 +64,27 @@
     command: /etc/init.d/krb5-admin-server restart
   - name: addprinc root/admin
     shell: echo 'addprinc -randkey host/precise32.fazmic.com@FAZMIC.COM' | kadmin.local root/admin@FAZMIC.COM
+  - name: add host root/admin
     shell: echo 'ktadd -k /etc/krb5.keytab host/precise32.fazmic.com@FAZMIC.COM' | kadmin.local root/admin@FAZMIC.COM
+  - name: add user
     shell: echo 'addprinc -pw pwd fazmic@FAZMIC.COM' | kadmin.local root/admin@FAZMIC.COM
   - name: enable kerbers in sshd auth
     lineinfile: dest=/etc/ssh/sshd_config regexp='GSSAPIAuthentication' line='GSSAPIAuthentication yes' owner=root group=root mode=0644
   - name: enable kerbers in sshd cleanup
     lineinfile: dest=/etc/ssh/sshd_config regexp='GSSAPICleanupCredentials' line='GSSAPICleanupCredentials yes' owner=root group=root mode=0644
     notify: restart sshd
+  - name: share keytab
+    file: name=/etc/krb5.keytab group=vagrant mode=0640
+  - name: enable PAM
+    lineinfile: dest=/etc/ssh/sshd_config regexp='UsePAM' line='UsePAM yes'
+    notify: restart sshd
   - name: enable client ssh
-    lineinfile: dest=/etc/ssh/ssh_config regexp='GSSAPIAuthentication' line='GSSAPIAuthentication yes'
+    lineinfile: dest=/etc/ssh/ssh_config regexp='GSSAPIAuthentication' line='  GSSAPIAuthentication yes'
+  - name: enable client ssh delegation
+    lineinfile: dest=/etc/ssh/ssh_config regexp='GSSAPIDelegateCredentials' line='  GSSAPIDelegateCredentials yes'
   handlers:
-    - name: restart sshd
-      command: service ssh restart 
+  - name: restart sshd
+    command: service ssh restart
 
 
 
