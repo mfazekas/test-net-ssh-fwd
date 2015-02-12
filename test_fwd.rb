@@ -5,6 +5,10 @@ $:.push(ENV['NET_SSH_KERBEROS_DIR'] || './net-ssh-kerberos/lib/') if ENABLE_KERB
 $:.push(ENV['BELTONE_DIR'] || './beltone/lib')
 $:.push("./lib")
 
+if ENABLE_KERBEROS
+require 'net/ssh/kerberos'
+end
+
 require 'sshfwd/server'
 require 'screen'
 require 'parser'
