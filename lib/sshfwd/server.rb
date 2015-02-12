@@ -335,10 +335,13 @@ class Server
       options[:auth_logic] = auth_logic
       options[:event_loop] = event_loop unless use_listeners
       if (kerbotps = @server_options[:kerberos])
+        options[:allowed_auth_methods] = ['gssapi-with-mic']
         options[:auth_methods] = ['gssapi-with-mic']
         options[:gss_server_host] = kerbotps[:host]
         options[:gss_server_service] = kerbotps[:service]
         options[:gss_server_servicekeytab] = kerbotps[:keytab]
+      else
+        options[:allowed_auth_methods] = ['password','none']
       end
 
       fwd_options = @forward_options
