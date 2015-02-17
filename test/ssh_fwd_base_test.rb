@@ -36,7 +36,7 @@ class SshFwdBaseTest < MiniTest::Unit::TestCase
     port = options[:port]
     command = options[:scp]
     user = options[:user] || user
-    password = options[:password] || pwd
+    passwords = options[:passwords] || (options[:password] && [options[:password]]) || [pwd]
     params = options[:params]
 
     sshopts_str = sshopts(options[:sshopts]||{})
@@ -48,11 +48,14 @@ class SshFwdBaseTest < MiniTest::Unit::TestCase
     outs = ''
     PTY.spawn(command) do |reader, writer, pid|
       begin
-        reader.expect(/password:.*/) do |data|
-          puts data
-          outs << data.join('')
+        while passwords.size > 0
+          reader.expect(/password:.*/) do |data|
+            puts data
+            outs << data.join('')
+          end
+          password = passwords.shift
+          writer.puts(password)
         end
-        writer.puts(password)
         until reader.eof? do
           line = reader.readline
           puts line

@@ -95,4 +95,25 @@ class ScpForwardTest < SshFwdBaseTest
     assert_equal(false,File.exists?(dst_file))
     assert_match(/BAD FILENAME/,out)
   end
+
+  def test_scp_wrong_then_good_password
+    start_server
+
+    FileUtils::mkdir_p "/tmp/src"
+    src_file = "/tmp/src/foo#{Time.now.to_i}.txt"
+    src_file2 = "/tmp/src/foo2_#{Time.now.to_i}.txt"
+    dst_dir = "/tmp/"
+    dst_file = File.join(dst_dir, File.basename(src_file))
+
+    content = "content:tmp#{Time.now.to_i}"
+    File.open(src_file, File::CREAT|File::TRUNC|File::RDWR, 0664) {|f| f.write(content) }
+    File.open(src_file2, File::CREAT|File::TRUNC|File::RDWR, 0664) {|f| f.write(content) }
+
+    ec,out = do_ssh(host:@host,port:@port,command:'scp',params:"#{src_file} #{user}@#{@host}:/tmp/", 
+      passwords:['invalid_pwd',pwd])
+    assert_equal(0,ec)
+    assert_equal(content,File.open(dst_file,'r').read())
+
+
+  end
 end

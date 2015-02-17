@@ -107,7 +107,7 @@ class FwdConnection
   end
 
   def allow_password?(username,password,options)
-    @auth = Net::SSH::Authentication::Session.new(@transport, @options[:ssh])
+    @auth = Net::SSH::Authentication::Session.new(@transport, @options[:ssh].merge(number_of_password_prompts: 0))
     if @auth.authenticate(options[:next_service], username, password)
       _init_connection
       @username = username
@@ -427,7 +427,14 @@ class Server
 
     loop do
       break if @stopped
-      Thread.start(@server.accept) do |client|
+
+      begin
+        new_client = @server.accept
+      rescue Errno::EBADF
+        raise unless @stopped
+      end
+
+      Thread.start(new_client) do |client|
         handle_client(client,logger,evlogger,auth_logic,server_keys) unless @stopped
       end
     end
