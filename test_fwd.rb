@@ -47,18 +47,25 @@ end
 LISTEN_PORT = 2000
 DEST_PORT = 22
 
+logger = Logger.new('./logfile.txt')
+logger.level = Logger::DEBUG
+logger.formatter = proc { |severity, datetime, progname, msg| "[L] #{datetime}: #{msg}\n" }
+#logger = nil
+
 server_options = {
   kerberos: {
     host: 'precise32.fazmic.com',
     service: 'host',
     keytab: '/etc/krb5.keytab'
   },
+  logger: logger,
   verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('S')) ? :debug : :warn,
   port: LISTEN_PORT
 }
 forward_options = {
   disabled: (ENV['NO_FORWARD']),
   host: 'localhost',
+  logger: logger,
   verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('F')) ? :debug : :warn,
   ssh: {
     port: DEST_PORT

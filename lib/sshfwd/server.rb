@@ -92,8 +92,8 @@ class FwdConnection
     @event_loop = options[:event_loop]
     alogger = SSHFwd::_create_logger(options)
     alogger.formatter = proc { |severity, datetime, progname, msg| "[FWD] #{datetime}: #{msg}\n" }
-    options[:logger] = alogger
-    options[:ssh][:logger] = alogger
+    options[:logger] ||= alogger
+    options[:ssh][:logger] = options[:logger]
     self.logger = alogger
   end
 
@@ -392,11 +392,7 @@ class Server
           fwd_connection.handle(connection)
           handler_added = true
         end
-        #if use_listeners
-          fwd_connection.process
-          #else
-        #  event_loop.process
-        #end
+        fwd_connection.process
       end
     rescue Exception => exception
       logger.error { "Got exception: #{exception.inspect}" }
@@ -406,7 +402,9 @@ class Server
   end
 
   def run
-    logger = SSHFwd::_create_logger(@server_options)
+    unless logger = @server_options[:logger]
+      logger = SSHFwd::_create_logger(@server_options)
+    end
 
     logger.info { "Setting up server keys..." }
     server_keys = Net::SSH::Server::Keys.new(logger: logger, server_keys_directory: '.')
@@ -422,8 +420,10 @@ class Server
 
     auth_logic = AuthLogic.new
 
-    evlogger = SSHFwd::_create_logger(@server_options)
-    evlogger.formatter = proc { |severity, datetime, progname, msg| "[EV] #{datetime}: #{msg}\n" }
+    unless evlogger = @server_options[:logger] || @server_options[:evlogger]
+      evlogger = SSHFwd::_create_logger(@server_options)
+      evlogger.formatter = proc { |severity, datetime, progname, msg| "[EV] #{datetime}: #{msg}\n" }
+    end
 
     loop do
       break if @stopped
