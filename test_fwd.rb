@@ -68,6 +68,9 @@ forward_options = {
   logger: logger,
   verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('F')) ? :debug : :warn,
   ssh: {
+    global_known_hosts_file: './globalhosts.txt',
+    user_known_hosts_file: './userhosts.txt',
+    keys: [],
     port: DEST_PORT
   },
   create_filter: ->(request_type, options = {}) {
