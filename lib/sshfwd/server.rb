@@ -248,10 +248,10 @@ class FwdConnection
         _handle_data_from_client(channel)
 
         if options[:want_reply]
+          options[:want_reply] = false
           _fwd_channel(channel).send_channel_request(request_type,:raw,packet.read) do |fwd_ch, success|
             info { "received reply from server: #{request_type} #{success} forwarding to client" }
             channel.send_reply(success)
-            options[:want_reply] = false
           end
         else
           _fwd_channel(channel).send_channel_request(request_type,:raw,packet.read)
@@ -299,10 +299,10 @@ class FwdConnection
       fwd_channel.on_request request_type do |fwd_channel,data,options|
         info { "received request from server #{request_type} so forwarding to client" }
         if options[:want_reply]
+          options[:want_reply] = false
           channel.send_channel_request(request_type,:raw,data.read) do |fwd_ch, success|
             info { "received reply from client on #{request_type} #{success} forwarding to server" }
             channel.send_reply(success)
-            options[:want_reply] = false
           end
         else
           channel.send_channel_request(request_type,:raw,data.read)
