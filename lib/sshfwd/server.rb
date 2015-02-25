@@ -397,7 +397,7 @@ class Server
     rescue Exception => exception
       logger.error { "Got exception: #{exception.inspect}" }
       logger.error { exception.backtrace.join("\n") }
-      client.close
+      client.close rescue nil
     end
   end
 
