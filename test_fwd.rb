@@ -47,6 +47,10 @@ end
 LISTEN_PORT = 2000
 DEST_PORT = 22
 
+fast_algs = Net::SSH::Transport::Algorithms::ALGORITHMS[:encryption]
+fast_algs.reject! { |alg| (alg =~ /(-ctr(@openssh.org)?|arcfour\d+)$/) }
+
+
 logger = Logger.new('./logfile.txt')
 logger.level = Logger::DEBUG
 logger.formatter = proc { |severity, datetime, progname, msg| "[L] #{datetime}: #{msg}\n" }
@@ -56,16 +60,19 @@ server_options = {
   kerberos: {
     host: 'precise32.fazmic.com',
     service: 'host',
-    keytab: '/etc/krb5.keytab'
+    keytab: '/etc/krb5.keytab',
   },
-  logger: logger,
+  ssh: {
+    encryption: fast_algs,
+  },
+  #logger: logger,
   verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('S')) ? :debug : :warn,
   port: LISTEN_PORT
 }
 forward_options = {
   disabled: (ENV['NO_FORWARD']),
   host: 'localhost',
-  logger: logger,
+  #logger: logger,
   verbose: (ENV['DEBUG'] && ENV['DEBUG'].include?('F')) ? :debug : :warn,
   ssh: {
     global_known_hosts_file: './globalhosts.txt',

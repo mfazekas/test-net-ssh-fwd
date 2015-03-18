@@ -339,7 +339,7 @@ class Server
     @server.close
   end
 
-  def handle_client(client,logger,evlogger,auth_logic,server_keys)
+  def handle_client(client,logger,evlogger,server_keys)
     begin
       event_loop = Net::SSH::Connection::Session::EventLoop.new(evlogger)
       client.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
@@ -352,7 +352,6 @@ class Server
       options[:host_key] = server_keys.types
       options[:kex] = ['diffie-hellman-group-exchange-sha256']
       options[:hmac] = ['hmac-md5']
-      options[:auth_logic] = auth_logic
       options[:event_loop] = event_loop unless use_listeners
       if (kerbotps = @server_options[:kerberos])
         options[:allowed_auth_methods] = ['gssapi-with-mic']
@@ -363,6 +362,7 @@ class Server
       else
         options[:allowed_auth_methods] = ['password','none']
       end
+      options.merge!(@server_options[:ssh] || {})
 
       fwd_options = @forward_options
       fwd_options[:ssh]||={}
@@ -417,8 +417,6 @@ class Server
       logger.info { "Listening on port #{port}..." }
       @server = TCPServer.new port
     end
-
-    auth_logic = AuthLogic.new
 
     unless evlogger = @server_options[:logger] || @server_options[:evlogger]
       evlogger = SSHFwd::_create_logger(@server_options)
